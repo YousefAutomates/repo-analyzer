@@ -1,119 +1,566 @@
 import os
 from datetime import datetime
+from typing import Dict, Any, Optional, List
+
 
 class ReportGenerator:
-    SEP = '=' * 80
+    """
+    Generates comprehensive AI-ready text reports from scan data.
+    Includes token estimation and smart sectioning.
 
-    def generate_report(self, scan_data, include_file_contents=True, include_statistics=True, include_commits=True, include_contributors=True):
-        parts = [self._header(scan_data), self._repo_info(scan_data)]
-        if include_statistics: parts.append(self._statistics(scan_data))
-        parts.append(self._tree(scan_data))
-        parts.append(self._languages(scan_data))
-        if include_contributors and scan_data.get('contributors'): parts.append(self._contributors(scan_data))
-        if include_commits and scan_data.get('latest_commits'): parts.append(self._commits(scan_data))
-        if include_file_contents and scan_data.get('file_contents'): parts.append(self._files(scan_data))
-        if scan_data.get('binary_files'): parts.append(self._binaries(scan_data))
-        if scan_data.get('skipped_files'): parts.append(self._skipped(scan_data))
-        parts.append(self._footer(scan_data))
-        parts.append(self._ai_prompt(scan_data))
-        return '\n\n'.join(parts)
+    Author: Yousef Elsherbiny (YousefAutomates)
+    """
 
-    def _header(self, d):
-        i = d['repo_info']
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        return f'{self.SEP}\nGITHUB REPOSITORY - COMPLETE ANALYSIS REPORT\nDate: {now}\nRepo: {i["full_name"]}\nURL: {i["html_url"]}\nBranch: {d.get("scan_branch","main")}\n{self.SEP}\nThis report contains complete project description and ALL source code.\nSend to AI (ChatGPT/Claude/Gemini) to request modifications.'
+    SEPARATOR = "=" * 80
+    SUB_SEPARATOR = "-" * 60
 
-    def _repo_info(self, d):
-        i = d['repo_info']
-        vis = 'Private' if i.get('private') else 'Public'
-        t = f'{self.SEP}\nREPOSITORY INFO\n{self.SEP}\nName: {i["name"]}\nFull: {i["full_name"]}\nDesc: {i.get("description","N/A")}\nVisibility: {vis}\nLanguage: {i.get("language","N/A")}\nStars: {i.get("stars",0)} | Forks: {i.get("forks",0)} | Issues: {i.get("open_issues",0)}\nLicense: {i.get("license","None")}\nBranch: {i.get("default_branch","main")}\nCreated: {i.get("created_at","N/A")}\nUpdated: {i.get("updated_at","N/A")}\nOwner: {i.get("owner",{}).get("login","N/A")}'
-        if i.get('topics'): t += f'\nTopics: {chr(44).join(i["topics"])}'
-        if d.get('branches'):
-            t += f'\n\nBranches ({len(d["branches"])}):'
-            for j, b in enumerate(d['branches'], 1):
-                mk = ' (default)' if b == i.get('default_branch') else ''
-                t += f'\n  {j}. {b}{mk}'
-        return t
+    # Approximate context window sizes for different AI models
+    AI_CONTEXT_LIMITS = {
+        "GPT-4": 128000,
+        "GPT-4o": 128000,
+        "GPT-3.5": 16385,
+        "Claude 3.5 Sonnet": 200000,
+        "Claude 3 Opus": 200000,
+        "Gemini 1.5 Pro": 1000000,
+        "Gemini 2.0": 1000000,
+    }
 
-    def _statistics(self, d):
-        s = d.get('statistics',{})
-        t = f'{self.SEP}\nSTATISTICS\n{self.SEP}\nFiles: {d.get("total_files",0)}\nDirs: {d.get("total_directories",0)}\nAnalyzed: {s.get("total_text_files",0)}\nLines: {s.get("total_lines",0):,}\nSize: {s.get("total_size_formatted","N/A")}\nAvg Lines/File: {s.get("avg_lines_per_file",0)}'
-        if s.get('files_by_category'):
-            t += '\n\nBy Category:'
-            for cat, cnt in sorted(s['files_by_category'].items(), key=lambda x: x[1], reverse=True):
-                t += f'\n  {cat:20s}: {cnt:4d}'
-        if s.get('largest_files'):
-            t += '\n\nLargest:'
-            for j, f in enumerate(s['largest_files'], 1):
-                t += f'\n  {j}. {f["path"]:50s} ({f["size_formatted"]})'
-        return t
+    def generate_report(
+        self,
+        scan_data: Dict[str, Any],
+        include_file_contents: bool = True,
+        include_statistics: bool = True,
+        include_commits: bool = True,
+        include_contributors: bool = True,
+    ) -> str:
+        """
+        Generate a complete analysis report from scan data.
 
-    def _tree(self, d): return f'{self.SEP}\nPROJECT STRUCTURE\n{self.SEP}\n{d.get("directory_structure_text","N/A")}'
+        Args:
+            scan_data: Dictionary from RepoScanner.scan_repository()
+            include_file_contents: Include full source code
+            include_statistics: Include statistics section
+            include_commits: Include commit history
+            include_contributors: Include contributors list
 
-    def _languages(self, d):
-        lp = d.get('statistics',{}).get('language_percentages',{})
-        if not lp: return ''
-        t = f'{self.SEP}\nLANGUAGES\n{self.SEP}'
-        for lang, pct in lp.items(): t += f'\n  {lang:20s}: {pct:5.1f}%'
-        return t
+        Returns:
+            Complete report as string
+        """
+        parts = []
 
-    def _contributors(self, d):
-        t = f'{self.SEP}\nCONTRIBUTORS\n{self.SEP}'
-        for j, c in enumerate(d.get('contributors',[]), 1): t += f'\n  {j}. {c["login"]} ({c["contributions"]} commits)'
-        return t
+        # Header
+        parts.append(self._build_header(scan_data))
 
-    def _commits(self, d):
-        t = f'{self.SEP}\nLATEST COMMITS\n{self.SEP}'
-        for j, c in enumerate(d.get('latest_commits',[]), 1):
-            msg = c['message'].split(chr(10))[0]
-            t += f'\n  {j}. [{c["sha"]}] {msg}\n     By: {c["author"]} | {c["date"]}'
-        return t
+        # Repository info
+        parts.append(self._build_repo_info(scan_data))
 
-    def _files(self, d):
-        contents = d.get('file_contents',{})
-        cats = d.get('file_categories',{})
-        t = f'{self.SEP}\nFILE CONTENTS ({len(contents)} files)\n{self.SEP}'
-        by_dir = {}
-        for p in sorted(contents.keys()):
-            parts = p.rsplit('/', 1)
-            dr = parts[0] if len(parts) > 1 else '(root)'
-            by_dir.setdefault(dr, []).append(p)
-        num = 0
-        for dr in sorted(by_dir.keys()):
-            t += f'\n\n--- Directory: {dr} ---'
-            for p in by_dir[dr]:
-                num += 1
-                c = contents[p]
-                cat = cats.get(p, 'Other')
-                lines = len(c.split(chr(10)))
-                lang = self._lang(p)
-                t += f'\n\n{"="*60}\nFile #{num}: {p}\nCategory: {cat} | Lines: {lines}\n{"="*60}\n\n```{lang}\n{c}\n```'
-        return t
+        # Statistics
+        if include_statistics:
+            stats_section = self._build_statistics(scan_data)
+            if stats_section:
+                parts.append(stats_section)
 
-    def _binaries(self, d):
-        bins = d.get('binary_files',[])
-        t = f'{self.SEP}\nBINARY FILES ({len(bins)})\n{self.SEP}'
-        for j, p in enumerate(sorted(bins), 1): t += f'\n  {j}. {p}'
-        return t
+        # Project structure
+        parts.append(self._build_tree(scan_data))
 
-    def _skipped(self, d):
-        t = f'{self.SEP}\nSKIPPED FILES\n{self.SEP}'
-        for j, f in enumerate(d.get('skipped_files',[]), 1): t += f'\n  {j}. {f["path"]} - {f["reason"]}'
-        return t
+        # Languages
+        lang_section = self._build_languages(scan_data)
+        if lang_section:
+            parts.append(lang_section)
 
-    def _footer(self, d):
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        return f'{self.SEP}\nEND OF REPORT | Generated: {now}\nRepo: {d["repo_info"]["full_name"]}\n{self.SEP}'
+        # Contributors
+        if include_contributors and scan_data.get("contributors"):
+            parts.append(self._build_contributors(scan_data))
 
-    def _ai_prompt(self, d):
-        i = d['repo_info']
-        s = d.get('statistics',{})
-        return f'{self.SEP}\nAI INSTRUCTIONS\n{self.SEP}\n\nProject: {i["full_name"]}\nDesc: {i.get("description","N/A")}\nLang: {i.get("language","N/A")}\nFiles: {d.get("total_files",0)}\nLines: {s.get("total_lines",0):,}\n\nAbove is the complete project with all source code.\nREQUESTED CHANGES: [Write what you want here]\n\n{self.SEP}'
+        # Commits
+        if include_commits and scan_data.get("latest_commits"):
+            parts.append(self._build_commits(scan_data))
 
-    def _lang(self, path):
+        # Dependencies analysis
+        deps_section = self._build_dependencies(scan_data)
+        if deps_section:
+            parts.append(deps_section)
+
+        # File contents (the main part)
+        if include_file_contents and scan_data.get("file_contents"):
+            parts.append(self._build_file_contents(scan_data))
+
+        # Binary files
+        if scan_data.get("binary_files"):
+            parts.append(self._build_binary_list(scan_data))
+
+        # Skipped files
+        if scan_data.get("skipped_files"):
+            parts.append(self._build_skipped_list(scan_data))
+
+        # Token estimation
+        parts.append(self._build_token_info(scan_data))
+
+        # Footer
+        parts.append(self._build_footer(scan_data))
+
+        # AI instructions
+        parts.append(self._build_ai_instructions(scan_data))
+
+        return "\n\n".join(filter(None, parts))
+
+    def _build_header(self, data: Dict) -> str:
+        """Build the report header section."""
+        info = data["repo_info"]
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        branch = data.get("scan_branch", "main")
+
+        return (
+            f"{self.SEPARATOR}\n"
+            f"GITHUB REPOSITORY - COMPLETE ANALYSIS REPORT\n"
+            f"Generated by: repo-analyzer v2.0.0 (https://github.com/YousefAutomates/repo-analyzer)\n"
+            f"Author: Yousef Elsherbiny | https://yousefautomates.pages.dev\n"
+            f"{self.SEPARATOR}\n"
+            f"Date    : {now}\n"
+            f"Repo    : {info['full_name']}\n"
+            f"URL     : {info['html_url']}\n"
+            f"Branch  : {branch}\n"
+            f"{self.SEPARATOR}\n"
+            f"This report contains the complete project description and ALL source code.\n"
+            f"Send this to AI (ChatGPT / Claude / Gemini) to request analysis or modifications."
+        )
+
+    def _build_repo_info(self, data: Dict) -> str:
+        """Build the repository information section."""
+        info = data["repo_info"]
+        visibility = "Private 🔒" if info.get("private") else "Public 🌐"
+
+        lines = [
+            self.SEPARATOR,
+            "REPOSITORY INFO",
+            self.SEPARATOR,
+            f"Name        : {info['name']}",
+            f"Full Name   : {info['full_name']}",
+            f"Description : {info.get('description', 'N/A')}",
+            f"Visibility  : {visibility}",
+            f"Language    : {info.get('language', 'N/A')}",
+            f"Stars       : {info.get('stars', 0)} | Forks: {info.get('forks', 0)} | Issues: {info.get('open_issues', 0)}",
+            f"License     : {info.get('license', 'None')}",
+            f"Branch      : {info.get('default_branch', 'main')}",
+            f"Created     : {info.get('created_at', 'N/A')}",
+            f"Updated     : {info.get('updated_at', 'N/A')}",
+            f"Owner       : {info.get('owner', {}).get('login', 'N/A')}",
+        ]
+
+        # Topics
+        topics = info.get("topics", [])
+        if topics:
+            lines.append(f"Topics      : {', '.join(topics)}")
+
+        # Branches
+        branches = data.get("branches", [])
+        if branches:
+            lines.append(f"\nBranches ({len(branches)}):")
+            for idx, branch_name in enumerate(branches, 1):
+                marker = " (default)" if branch_name == info.get("default_branch") else ""
+                lines.append(f"  {idx}. {branch_name}{marker}")
+
+        return "\n".join(lines)
+
+    def _build_statistics(self, data: Dict) -> str:
+        """Build the statistics section."""
+        stats = data.get("statistics", {})
+        if not stats:
+            return ""
+
+        lines = [
+            self.SEPARATOR,
+            "STATISTICS",
+            self.SEPARATOR,
+            f"Total Files      : {data.get('total_files', 0)}",
+            f"Total Directories: {data.get('total_directories', 0)}",
+            f"Files Analyzed   : {stats.get('total_text_files', 0)}",
+            f"Total Lines      : {stats.get('total_lines', 0):,}",
+            f"Total Size       : {stats.get('total_size_formatted', 'N/A')}",
+            f"Avg Lines/File   : {stats.get('avg_lines_per_file', 0)}",
+        ]
+
+        # Files by category
+        categories = stats.get("files_by_category", {})
+        if categories:
+            lines.append("\nFiles by Category:")
+            for category, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+                bar = "█" * min(count, 30)
+                lines.append(f"  {category:20s}: {count:4d} {bar}")
+
+        # Largest files
+        largest = stats.get("largest_files", [])
+        if largest:
+            lines.append("\nLargest Files:")
+            for idx, file_info in enumerate(largest[:10], 1):
+                lines.append(f"  {idx:2d}. {file_info['path']:50s} ({file_info['size_formatted']})")
+
+        return "\n".join(lines)
+
+    def _build_tree(self, data: Dict) -> str:
+        """Build the project structure section."""
+        tree = data.get("directory_structure_text", "N/A")
+        return f"{self.SEPARATOR}\nPROJECT STRUCTURE\n{self.SEPARATOR}\n{tree}"
+
+    def _build_languages(self, data: Dict) -> str:
+        """Build the languages breakdown section."""
+        percentages = data.get("statistics", {}).get("language_percentages", {})
+        if not percentages:
+            return ""
+
+        lines = [self.SEPARATOR, "LANGUAGES", self.SEPARATOR]
+
+        for language, percentage in percentages.items():
+            bar_length = int(percentage / 2)
+            bar = "█" * bar_length
+            lines.append(f"  {language:20s}: {percentage:5.1f}% {bar}")
+
+        return "\n".join(lines)
+
+    def _build_contributors(self, data: Dict) -> str:
+        """Build the contributors section."""
+        contributors = data.get("contributors", [])
+        if not contributors:
+            return ""
+
+        lines = [self.SEPARATOR, "CONTRIBUTORS", self.SEPARATOR]
+
+        for idx, contributor in enumerate(contributors, 1):
+            lines.append(
+                f"  {idx:2d}. {contributor['login']} "
+                f"({contributor['contributions']} commits) "
+                f"- {contributor.get('html_url', '')}"
+            )
+
+        return "\n".join(lines)
+
+    def _build_commits(self, data: Dict) -> str:
+        """Build the latest commits section."""
+        commits = data.get("latest_commits", [])
+        if not commits:
+            return ""
+
+        lines = [self.SEPARATOR, "LATEST COMMITS", self.SEPARATOR]
+
+        for idx, commit in enumerate(commits, 1):
+            message = commit["message"].split("\n")[0]  # First line only
+            lines.append(
+                f"  {idx:2d}. [{commit['sha']}] {message}\n"
+                f"      Author: {commit['author']} | Date: {commit['date']}"
+            )
+
+        return "\n".join(lines)
+
+    def _build_dependencies(self, data: Dict) -> str:
+        """
+        Analyze and list project dependencies from common config files.
+        """
+        contents = data.get("file_contents", {})
+        dep_files = {
+            "requirements.txt": "Python (pip)",
+            "Pipfile": "Python (Pipenv)",
+            "pyproject.toml": "Python (Poetry/PEP 621)",
+            "setup.py": "Python (setuptools)",
+            "package.json": "Node.js (npm/yarn)",
+            "Gemfile": "Ruby (Bundler)",
+            "Cargo.toml": "Rust (Cargo)",
+            "go.mod": "Go (modules)",
+            "pom.xml": "Java (Maven)",
+            "build.gradle": "Java/Kotlin (Gradle)",
+            "composer.json": "PHP (Composer)",
+        }
+
+        found_deps = []
+        for filepath, label in dep_files.items():
+            if filepath in contents:
+                found_deps.append((filepath, label, contents[filepath]))
+
+        if not found_deps:
+            return ""
+
+        lines = [self.SEPARATOR, "DEPENDENCIES ANALYSIS", self.SEPARATOR]
+
+        for filepath, label, content in found_deps:
+            lines.append(f"\n  📦 {label} ({filepath}):")
+            lines.append(f"  {self.SUB_SEPARATOR}")
+
+            if filepath == "requirements.txt":
+                for line in content.strip().split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        lines.append(f"    • {line}")
+
+            elif filepath == "package.json":
+                try:
+                    import json
+                    pkg = json.loads(content)
+                    deps = pkg.get("dependencies", {})
+                    dev_deps = pkg.get("devDependencies", {})
+                    if deps:
+                        lines.append("    Dependencies:")
+                        for name, version in deps.items():
+                            lines.append(f"      • {name}: {version}")
+                    if dev_deps:
+                        lines.append("    Dev Dependencies:")
+                        for name, version in dev_deps.items():
+                            lines.append(f"      • {name}: {version}")
+                except (json.JSONDecodeError, Exception):
+                    lines.append("    [Could not parse package.json]")
+
+            elif filepath == "go.mod":
+                for line in content.strip().split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("//") and not line.startswith("module") and not line.startswith(")"):
+                        if line.startswith("require") or line.startswith("go "):
+                            lines.append(f"    {line}")
+                        elif not line.startswith("("):
+                            lines.append(f"    • {line}")
+
+            else:
+                # Generic: show first 20 lines
+                content_lines = content.strip().split("\n")[:20]
+                for line in content_lines:
+                    lines.append(f"    {line}")
+                if len(content.strip().split("\n")) > 20:
+                    lines.append(f"    ... ({len(content.strip().split(chr(10)))} total lines)")
+
+        return "\n".join(lines)
+
+    def _build_file_contents(self, data: Dict) -> str:
+        """Build the file contents section with all source code."""
+        contents = data.get("file_contents", {})
+        categories = data.get("file_categories", {})
+
+        lines = [
+            self.SEPARATOR,
+            f"FILE CONTENTS ({len(contents)} files)",
+            self.SEPARATOR,
+        ]
+
+        # Group files by directory
+        by_directory: Dict[str, list] = {}
+        for path in sorted(contents.keys()):
+            parts = path.rsplit("/", 1)
+            directory = parts[0] if len(parts) > 1 else "(root)"
+            by_directory.setdefault(directory, []).append(path)
+
+        file_number = 0
+        for directory in sorted(by_directory.keys()):
+            lines.append(f"\n--- Directory: {directory} ---")
+
+            for path in by_directory[directory]:
+                file_number += 1
+                content = contents[path]
+                category = categories.get(path, "Other")
+                line_count = len(content.split("\n"))
+                language = self._detect_language(path)
+
+                lines.append(
+                    f"\n{'=' * 60}\n"
+                    f"File #{file_number}: {path}\n"
+                    f"Category: {category} | Lines: {line_count}\n"
+                    f"{'=' * 60}\n\n"
+                    f"```{language}\n"
+                    f"{content}\n"
+                    f"```"
+                )
+
+        return "\n".join(lines)
+
+    def _build_binary_list(self, data: Dict) -> str:
+        """Build the binary files list section."""
+        binary_files = sorted(data.get("binary_files", []))
+        if not binary_files:
+            return ""
+
+        lines = [
+            self.SEPARATOR,
+            f"BINARY FILES ({len(binary_files)}) - Not included in report",
+            self.SEPARATOR,
+        ]
+
+        for idx, path in enumerate(binary_files, 1):
+            lines.append(f"  {idx:3d}. {path}")
+
+        return "\n".join(lines)
+
+    def _build_skipped_list(self, data: Dict) -> str:
+        """Build the skipped files list section."""
+        skipped = data.get("skipped_files", [])
+        if not skipped:
+            return ""
+
+        lines = [self.SEPARATOR, "SKIPPED FILES", self.SEPARATOR]
+
+        for idx, file_info in enumerate(skipped, 1):
+            lines.append(f"  {idx}. {file_info['path']} - {file_info['reason']}")
+
+        return "\n".join(lines)
+
+    def _build_token_info(self, data: Dict) -> str:
+        """Build token estimation and AI compatibility info."""
+        estimated_tokens = data.get("estimated_tokens", 0)
+
+        lines = [
+            self.SEPARATOR,
+            "AI COMPATIBILITY INFO",
+            self.SEPARATOR,
+            f"Estimated tokens: ~{estimated_tokens:,}",
+            "",
+            "Context window compatibility:",
+        ]
+
+        for model, limit in sorted(self.AI_CONTEXT_LIMITS.items(), key=lambda x: x[1]):
+            if estimated_tokens <= limit:
+                status = "✅ Fits"
+                remaining = limit - estimated_tokens
+                lines.append(f"  {status} {model:25s} ({limit:>10,} tokens) - {remaining:,} tokens remaining")
+            else:
+                status = "❌ Too large"
+                overflow = estimated_tokens - limit
+                lines.append(f"  {status} {model:25s} ({limit:>10,} tokens) - exceeds by {overflow:,} tokens")
+
+        if estimated_tokens > 100000:
+            lines.append("")
+            lines.append("⚠️  Report is large. Consider:")
+            lines.append("  • Filtering specific directories or file types")
+            lines.append("  • Reducing max file size")
+            lines.append("  • Splitting across multiple AI conversations")
+
+        return "\n".join(lines)
+
+    def _build_footer(self, data: Dict) -> str:
+        """Build the report footer."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        info = data["repo_info"]
+
+        return (
+            f"{self.SEPARATOR}\n"
+            f"END OF REPORT\n"
+            f"Generated : {now}\n"
+            f"Repository: {info['full_name']}\n"
+            f"Tool      : repo-analyzer v2.0.0 by YousefAutomates\n"
+            f"Website   : https://yousefautomates.pages.dev\n"
+            f"{self.SEPARATOR}"
+        )
+
+    def _build_ai_instructions(self, data: Dict) -> str:
+        """Build the AI instructions template at the end."""
+        info = data["repo_info"]
+        stats = data.get("statistics", {})
+
+        return (
+            f"{self.SEPARATOR}\n"
+            f"AI INSTRUCTIONS TEMPLATE\n"
+            f"{self.SEPARATOR}\n"
+            f"\n"
+            f"Project    : {info['full_name']}\n"
+            f"Description: {info.get('description', 'N/A')}\n"
+            f"Language   : {info.get('language', 'N/A')}\n"
+            f"Files      : {data.get('total_files', 0)}\n"
+            f"Lines      : {stats.get('total_lines', 0):,}\n"
+            f"\n"
+            f"Above is the complete project with all source code.\n"
+            f"\n"
+            f"REQUESTED CHANGES:\n"
+            f"[Describe what you want the AI to do here]\n"
+            f"\n"
+            f"Example requests:\n"
+            f"  1. Explain how [specific feature] works\n"
+            f"  2. Add a new feature that does [X]\n"
+            f"  3. Fix the bug in [file/function]\n"
+            f"  4. Improve performance of [component]\n"
+            f"  5. Write unit tests for [module]\n"
+            f"  6. Refactor [section] for better readability\n"
+            f"  7. Add error handling to [function]\n"
+            f"  8. Convert this project to [another language/framework]\n"
+            f"\n"
+            f"{self.SEPARATOR}"
+        )
+
+    def _detect_language(self, path: str) -> str:
+        """
+        Detect the programming language for syntax highlighting.
+
+        Args:
+            path: File path
+
+        Returns:
+            Language identifier for markdown code blocks
+        """
         _, ext = os.path.splitext(path.lower())
-        fn = os.path.basename(path).lower()
-        m = {'.py':'python','.js':'javascript','.ts':'typescript','.jsx':'jsx','.tsx':'tsx','.java':'java','.c':'c','.cpp':'cpp','.h':'c','.cs':'csharp','.go':'go','.rs':'rust','.rb':'ruby','.php':'php','.swift':'swift','.kt':'kotlin','.dart':'dart','.sh':'bash','.sql':'sql','.html':'html','.css':'css','.scss':'scss','.json':'json','.yaml':'yaml','.yml':'yaml','.toml':'toml','.xml':'xml','.md':'markdown','.txt':'text','.vue':'vue','.env':'bash','.gitignore':'gitignore','.ini':'ini'}
-        if fn.startswith('dockerfile'): return 'dockerfile'
-        if fn == 'makefile': return 'makefile'
-        return m.get(ext, 'text')
+        filename = os.path.basename(path).lower()
+
+        language_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".jsx": "jsx",
+            ".tsx": "tsx",
+            ".java": "java",
+            ".c": "c",
+            ".cpp": "cpp",
+            ".h": "c",
+            ".hpp": "cpp",
+            ".cs": "csharp",
+            ".go": "go",
+            ".rs": "rust",
+            ".rb": "ruby",
+            ".php": "php",
+            ".swift": "swift",
+            ".kt": "kotlin",
+            ".dart": "dart",
+            ".sh": "bash",
+            ".bash": "bash",
+            ".zsh": "bash",
+            ".fish": "fish",
+            ".ps1": "powershell",
+            ".sql": "sql",
+            ".html": "html",
+            ".htm": "html",
+            ".css": "css",
+            ".scss": "scss",
+            ".sass": "sass",
+            ".less": "less",
+            ".json": "json",
+            ".yaml": "yaml",
+            ".yml": "yaml",
+            ".toml": "toml",
+            ".xml": "xml",
+            ".md": "markdown",
+            ".txt": "text",
+            ".vue": "vue",
+            ".svelte": "svelte",
+            ".graphql": "graphql",
+            ".proto": "protobuf",
+            ".tf": "hcl",
+            ".env": "bash",
+            ".gitignore": "gitignore",
+            ".ini": "ini",
+            ".cfg": "ini",
+            ".conf": "nginx",
+            ".r": "r",
+            ".R": "r",
+            ".scala": "scala",
+            ".ex": "elixir",
+            ".elm": "elm",
+            ".hs": "haskell",
+            ".clj": "clojure",
+            ".lua": "lua",
+            ".pl": "perl",
+            ".ipynb": "json",
+        }
+
+        # Special filenames
+        if filename.startswith("dockerfile"):
+            return "dockerfile"
+        if filename == "makefile":
+            return "makefile"
+        if filename == "cmakelists.txt":
+            return "cmake"
+        if filename in ("gemfile", "rakefile"):
+            return "ruby"
+        if filename == "procfile":
+            return "yaml"
+
+        return language_map.get(ext, "text")
