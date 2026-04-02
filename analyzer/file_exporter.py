@@ -1,109 +1,159 @@
-import os, zipfile
+import os
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict, Optional, Any
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class FileExporter:
-    def __init__(self, output_dir='output'):
+    """
+    Exports analysis reports to TXT format with auto-download support.
+    Optimized for Google Colab and Kaggle environments.
+
+    Author: Yousef Elsherbiny (YousefAutomates)
+    """
+
+    def __init__(self, output_dir: str = "output"):
+        """
+        Initialize the exporter.
+
+        Args:
+            output_dir: Directory to save output files
+        """
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-    def _bname(self, repo):
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        safe = repo.replace('/','_').replace(' ','_')
-        return f'repo_analysis_{safe}_{ts}'
+    def _generate_filename(self, repo_name: str) -> str:
+        """
+        Generate a timestamped filename.
 
-    def export_txt(self, text, repo_name):
-        p = os.path.join(self.output_dir, f'{self._bname(repo_name)}.txt')
-        with open(p, 'w', encoding='utf-8') as f: f.write(text)
-        print(f'  TXT: {p}')
-        return p
+        Args:
+            repo_name: Repository name for the filename
 
-    def export_pdf(self, text, repo_name):
-        from fpdf import FPDF
-        p = os.path.join(self.output_dir, f'{self._bname(repo_name)}.pdf')
-        class P(FPDF):
-            def header(self):
-                self.set_font('Helvetica','B',10)
-                self.cell(0,10,f'Analysis: {repo_name}',0,1,'C')
-                self.ln(3)
-            def footer(self):
-                self.set_y(-15)
-                self.set_font('Helvetica','I',8)
-                self.cell(0,10,f'Page {self.page_no()}',0,0,'C')
-        pdf = P()
-        pdf.set_auto_page_break(True, 15)
-        pdf.add_page()
-        pdf.set_font('Helvetica','',7)
-        for line in text.split(chr(10)):
-            try:
-                safe = line.encode('latin-1',errors='replace').decode('latin-1')
-                pdf.multi_cell(0, 3, safe, 0, 'L')
-            except: continue
-        pdf.output(p)
-        print(f'  PDF: {p}')
-        return p
+        Returns:
+            Base filename without extension
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = repo_name.replace("/", "_").replace(" ", "_")
+        return f"repo_analysis_{safe_name}_{timestamp}"
 
-    def export_word(self, text, repo_name, scan_data=None):
-        from docx import Document
-        from docx.shared import Pt, Inches, RGBColor
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-        p = os.path.join(self.output_dir, f'{self._bname(repo_name)}.docx')
-        doc = Document()
-        t = doc.add_heading('Repository Analysis Report', 0)
-        t.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        sub = doc.add_paragraph()
-        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = sub.add_run(repo_name)
-        run.font.size = Pt(16)
-        run.font.color.rgb = RGBColor(0,102,204)
-        doc.add_page_break()
-        in_code = False
-        code_buf = []
-        for line in text.split(chr(10)):
-            if line.startswith('```'):
-                if in_code:
-                    code = chr(10).join(code_buf)
-                    if code.strip():
-                        cp = doc.add_paragraph()
-                        r = cp.add_run(code)
-                        r.font.name = 'Courier New'
-                        r.font.size = Pt(7)
-                        cp.paragraph_format.left_indent = Inches(0.3)
-                    code_buf = []
-                    in_code = False
-                else: in_code = True
-                continue
-            if in_code: code_buf.append(line); continue
-            s = line.strip()
-            if not s: doc.add_paragraph(); continue
-            if s.startswith('='*20): continue
-            pr = doc.add_paragraph()
-            r = pr.add_run(s)
-            r.font.size = Pt(9)
-        doc.save(p)
-        print(f'  Word: {p}')
-        return p
+    def export_txt(self, report_text: str, repo_name: str) -> str:
+        """
+        Export report as a TXT file.
 
-    def export_zip(self, files, repo_name):
-        p = os.path.join(self.output_dir, f'{self._bname(repo_name)}.zip')
-        with zipfile.ZipFile(p, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for f in files:
-                if os.path.exists(f): zf.write(f, os.path.basename(f))
-        print(f'  ZIP: {p}')
-        return p
+        Args:
+            report_text: The complete report text
+            repo_name: Repository name for the filename
 
-    def export_all(self, report_text, repo_name, scan_data=None, formats=None, create_zip=False):
-        if formats is None: formats = ['txt']
-        exported, paths = {}, []
-        for fmt in formats:
-            try:
-                if fmt=='txt': pa = self.export_txt(report_text, repo_name)
-                elif fmt=='pdf': pa = self.export_pdf(report_text, repo_name)
-                elif fmt=='word': pa = self.export_word(report_text, repo_name, scan_data)
-                else: continue
-                exported[fmt] = pa; paths.append(pa)
-            except Exception as e: print(f'  Error {fmt}: {e}')
-        if create_zip and paths:
-            try: exported['zip'] = self.export_zip(paths, repo_name)
-            except Exception as e: print(f'  ZIP error: {e}')
+        Returns:
+            Path to the created file
+        """
+        filename = f"{self._generate_filename(repo_name)}.txt"
+        filepath = os.path.join(self.output_dir, filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(report_text)
+
+        file_size = os.path.getsize(filepath)
+        print(f"  📄 TXT exported: {filepath} ({self._format_size(file_size)})")
+
+        return filepath
+
+    def auto_download(self, filepath: str) -> bool:
+        """
+        Automatically download the file in Colab/Kaggle.
+
+        Args:
+            filepath: Path to the file to download
+
+        Returns:
+            True if download was triggered, False otherwise
+        """
+        if not os.path.exists(filepath):
+            print(f"  ❌ File not found: {filepath}")
+            return False
+
+        # Try Google Colab
+        try:
+            from google.colab import files
+            print(f"  ⬇️  Downloading: {os.path.basename(filepath)}")
+            files.download(filepath)
+            return True
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Colab download failed: {e}")
+            print(f"  ⚠️  Auto-download failed: {e}")
+
+        # Try Kaggle
+        try:
+            kaggle_output = "/kaggle/working"
+            if os.path.exists(kaggle_output):
+                import shutil
+                dest = os.path.join(kaggle_output, os.path.basename(filepath))
+                shutil.copy2(filepath, dest)
+                print(f"  📁 Copied to Kaggle output: {dest}")
+                return True
+        except Exception as e:
+            logger.warning(f"Kaggle copy failed: {e}")
+
+        # Terminal - just show path
+        print(f"  📁 File saved at: {os.path.abspath(filepath)}")
+        return False
+
+    def export_and_download(
+        self,
+        report_text: str,
+        repo_name: str,
+        scan_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        """
+        Export as TXT and automatically download.
+
+        Args:
+            report_text: The complete report text
+            repo_name: Repository name
+            scan_data: Optional scan data (for future use)
+
+        Returns:
+            Dictionary with format -> filepath mapping
+        """
+        exported = {}
+
+        try:
+            filepath = self.export_txt(report_text, repo_name)
+            exported["txt"] = filepath
+        except Exception as e:
+            print(f"  ❌ Export error: {e}")
+            logger.error(f"TXT export failed: {e}")
+            return exported
+
+        # Show file info
+        file_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+        print(f"\n  📊 Report Summary:")
+        print(f"     File    : {os.path.basename(filepath)}")
+        print(f"     Size    : {self._format_size(file_size)}")
+        print(f"     Lines   : {len(report_text.splitlines()):,}")
+        print(f"     Chars   : {len(report_text):,}")
+
+        if scan_data:
+            tokens = scan_data.get("estimated_tokens", len(report_text) // 4)
+            print(f"     Tokens  : ~{tokens:,} (estimated)")
+
+        # Auto download
+        print()
+        self.auto_download(filepath)
+
         return exported
+
+    @staticmethod
+    def _format_size(size_bytes: int) -> str:
+        """Format bytes to human readable string."""
+        for unit in ["B", "KB", "MB", "GB"]:
+            if size_bytes < 1024:
+                if unit == "B":
+                    return f"{int(size_bytes)} {unit}"
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024
+        return f"{size_bytes:.1f} TB"
