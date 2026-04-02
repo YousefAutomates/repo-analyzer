@@ -1,19 +1,47 @@
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.so
 *.egg-info/
+*.egg
 dist/
 build/
+eggs/
+*.whl
+
+# Virtual environments
 venv/
 env/
 .env
+.venv/
+
+# IDE
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
+
+# OS
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Project output
 output/
 *.pdf
 *.docx
 *.zip
+
+# Jupyter
 .ipynb_checkpoints/
+
+# Config with secrets
+config.yaml
+config.json
+.env.local
+
+# Cache
+.cache/
+.analyzer_cache/
